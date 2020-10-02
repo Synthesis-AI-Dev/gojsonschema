@@ -5,6 +5,14 @@ import (
 	"fmt"
 )
 
+// Gotchas and todos:
+// - a schema can contain multiple types, provided that only one is non-null
+// - oneOf is not supported at the moment, but probably should be
+//
+// w.r.t using "oneOf" (or similar), it appears that the validation part of
+// this library uses a "score" to determine best match. It seems like
+// doing something similar to this would be possible.
+
 // This code was inspired by, and follows the same basic structure as
 // https://github.com/juju/gojsonschema. The main notable differences are:
 //
@@ -56,80 +64,124 @@ func (s *Schema) getDocumentMap() (m map[string]interface{}, err error) {
 
 // insertRecursively inserts into "into", which is either an array or an object
 func insertRecursively(into interface{}, from map[string]interface{}) {
+	if v, ok := from["type"]; ok {
+		switch t := *typeIgnoreNull(v); t {
 
-	switch t := from["type"]; t {
+		case "array":
+			// intoAsArray represents many objects of the same type
+			intoAsArray := into.([]map[string]interface{})
 
-	case "array":
-		// intoAsArray represents many objects of the same type
-		intoAsArray := into.([]map[string]interface{})
+			// nextMap represents the subSchema that we want each item in the array
+			// to conform to
+			nextMap := from["items"].(map[string]interface{})
 
-		// nextMap represents the subSchema that we want each item in the array
-		// to conform to
-		nextMap := from["items"].(map[string]interface{})
+			for _, example := range intoAsArray {
+				insertRecursively(example, nextMap)
+			}
 
-		for _, example := range intoAsArray {
-			insertRecursively(example, nextMap)
-		}
+		case "object":
+			intoAsObject := into.(map[string]interface{})
 
-	case "object":
-		intoAsObject := into.(map[string]interface{})
+			// nextMap represents the subSchema that we want this single item to
+			// conform to
+			properties := from["properties"].(map[string]interface{})
 
-		// nextMap represents the subSchema that we want this single item to
-		// conform to
-		properties := from["properties"].(map[string]interface{})
+			for property, _nextSchema := range properties {
 
-		for property, _nextSchema := range properties {
+				nextSchema := _nextSchema.(map[string]interface{})
 
-			nextSchema := _nextSchema.(map[string]interface{})
+				// This block becomes active if value already exists in "into"
+				// for this property and value is not null.
+				//
+				// If v is null, we want to progress to the next block in case
+				// a default value exists and should be applied on top.
+				if v, ok := intoAsObject[property]; ok && v != nil {
+					switch v.(type) {
 
-			// This block becomes active if value already exists in "into"
-			// for this property and value is not null.
-			//
-			// If v is null, we want to progress to the next block in case
-			// a default value exists and should be applied on top.
-			if v, ok := intoAsObject[property]; ok && v != nil {
-				switch v.(type) {
+					case map[string]interface{}:
+						if innerMapAsObj, ok := v.(map[string]interface{}); ok {
+							insertRecursively(innerMapAsObj, nextSchema)
+						}
 
-				case map[string]interface{}:
-					if innerMapAsObj, ok := v.(map[string]interface{}); ok {
-						insertRecursively(innerMapAsObj, nextSchema)
+					case []map[string]interface{}:
+						if innerMapAsArr, ok := v.([]map[string]interface{}); ok {
+							insertRecursively(innerMapAsArr, nextSchema)
+						}
 					}
-
-				case []map[string]interface{}:
-					if innerMapAsArr, ok := v.([]map[string]interface{}); ok {
-						insertRecursively(innerMapAsArr, nextSchema)
-					}
+					continue
 				}
-				continue
-			}
 
-			// We can't step deeper so we're at an actual key/value
-			// Check to see if we should add a default
-			if d, ok := nextSchema["default"]; ok {
-				intoAsObject[property] = d
-				continue
-			}
+				// We can't step deeper so we're at an actual key/value
+				// Check to see if we should add a default
+				if d, ok := nextSchema["default"]; ok {
+					intoAsObject[property] = d
+					continue
+				}
 
-			// Finally, if the next schema does exists but there is nothing
-			// in the input object, we want to create a temporary interface, just
-			// in case a nested object has defaults
-			if t, ok := nextSchema["type"]; ok {
-				switch t {
-
-				// If there's an array here, we want to initialize it to an empty
-				// array and leave it at that.
-				case "array":
-					emptyarr := make([]map[string]interface{}, 0)
-					intoAsObject[property] = emptyarr
-
-				case "object":
-					tmpTarget := make(map[string]interface{})
-					insertRecursively(tmpTarget, nextSchema)
-					if len(tmpTarget) > 0 {
-						intoAsObject[property] = tmpTarget
+				// Finally, if the next schema does exists but there is nothing
+				// in the input object, we want to create a temporary interface, just
+				// in case a nested object has defaults
+				//
+				// This is one case where the specifications do not provide details around
+				// how default values must play with other properties, for example, if
+				// the user provides "null" in a given request (which is valid) and a
+				// default value exists in the inner object specs (which is also valid), we
+				// set the default value, upgrading the interpreted type from "null" to "object"
+				//
+				// In other words, the final object can never be null if a default value exists
+				// in a sub-schema, but IMO it's important to let the user know that it's ok to
+				// pass "null"
+				if v, ok := nextSchema["type"]; ok {
+					switch *typeIgnoreNull(v) {
+					case "object":
+						tmpTarget := make(map[string]interface{})
+						insertRecursively(tmpTarget, nextSchema)
+						if len(tmpTarget) > 0 {
+							intoAsObject[property] = tmpTarget
+						}
 					}
 				}
 			}
 		}
 	}
+}
+
+// stringExistsInSlice looks for str in slice. At the
+// moment, []interface{} is used because go doesn't know that
+// types must be a string, hence the compiler does not like that
+// I'm trying to slice as strictly containing them
+func stringExistsInSlice(slice []interface{}, val string) bool {
+	for _, item := range slice {
+		s := fmt.Sprintf("%v", item)
+		if s == val {
+			return true
+		}
+	}
+	return false
+}
+
+// return "string" if one of the following are matched
+// 1. type: "string"
+// 2. type: ["string", "null"]
+func typeIgnoreNull(v interface{}) *string {
+	switch v.(type) {
+	case string:
+		s := v.(string)
+		return &s
+	case []interface{}:
+		// according to jsonschema this must be a string, but go doesn't
+		// know that, and for all it knows this could be any type
+		s := v.([]interface{})
+		o := "object"
+		a := "array"
+
+		if stringExistsInSlice(s, o) {
+			return &o
+		}
+		if stringExistsInSlice(s, a) {
+			return &a
+		}
+	}
+
+	return nil
 }

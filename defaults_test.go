@@ -148,3 +148,59 @@ func TestArrayOfProperties(t *testing.T) {
 		t.Error("array[0] was not filled with the proper default values")
 	}
 }
+
+// TestTypeObjectOrNull make sure that a type that is an array containing
+// "object" will succeed
+func TestTypeObjectOrNull(t *testing.T) {
+	tdef := []string{
+		"object",
+		"null",
+	}
+	properties := M("deep", M("type", tdef, "properties", M("testkey", M("default", "defaultvalue"))))
+	schema := objSchemaFromProperties(properties)
+
+	into := make(map[string]interface{})
+
+	r, err := schema.InsertDefaults(into)
+	if err != nil {
+		t.Error(err)
+	}
+
+	result := r.(map[string]interface{})
+
+	innerMap := result["deep"].(map[string]interface{})
+
+	if v := innerMap["testkey"]; v != "defaultvalue" {
+		t.Error("InsertDefaults failed to add 'defaultvalue' at .'deep'.'testkey'")
+	}
+}
+
+// TestTypeArrayOrNull make sure that a type that is an array containing
+// "object" will succeed
+func TestTypeArrayOrNull(t *testing.T) {
+	properties := M("testkey", M("default", "defaultvalue"))
+
+	tdef := []string{
+		"array",
+		"null",
+	}
+	objMap := M("type", "object", "properties", properties)
+	arrMap := M("type", tdef, "items", objMap)
+
+	loader := NewGoLoader(arrMap)
+	schema, _ := NewSchema(loader)
+
+	emptyexample := M()
+
+	examplearr := make([]map[string]interface{}, 1)
+	examplearr[0] = emptyexample
+
+	r, err := schema.InsertDefaults(examplearr)
+	if err != nil {
+		t.Error(err)
+	}
+
+	if res := r.([]map[string]interface{}); res[0]["testkey"] != "defaultvalue" {
+		t.Error("array[0] was not filled with the proper default values")
+	}
+}
