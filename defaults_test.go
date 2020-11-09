@@ -1,7 +1,9 @@
 package gojsonschema
 
 import (
+	"encoding/json"
 	"log"
+	"reflect"
 	"testing"
 )
 
@@ -204,3 +206,131 @@ func TestTypeArrayOrNull(t *testing.T) {
 		t.Error("array[0] was not filled with the proper default values")
 	}
 }
+
+// TestDefaultsWithinArray make sure that if an array is null but
+// a default value is set for the array that the default value will be
+// set.
+func TestDefaultsWithinArray(t *testing.T) {
+	fProps := M("hdri", M("type", "string", "default", "apartment"))
+
+	face := M("type", "object", "properties", fProps)
+
+	fArray := M("type", "array", "items", face)
+	faces := M("faces", fArray)
+
+	req := M("type", "object", "properties", faces)
+
+	// object with array of objects
+	// we want to test properties of the inner array
+	// {
+	// 	"type": "object",
+	// 	"properties": {
+	// 		"faces": {
+	// 			"type": "array",
+	// 			"items": {
+	// 				"type": "object",
+	// 				"properties": {
+	// 					"hdri": {
+	// 						"type": "string",
+	// 						"default": "apartment"
+	// 					}
+	// 				}
+	// 			}
+	// 		}
+	// 	}
+	// }
+	loader := NewGoLoader(req)
+	schema, _ := NewSchema(loader)
+
+	exampleFaces := make([]map[string]interface{}, 1)
+	exampleFaces[0] = make(map[string]interface{})
+
+	exampleReq := make(map[string]interface{})
+	exampleReq["faces"] = exampleFaces
+
+	r, err := schema.InsertDefaults(exampleReq)
+	if err != nil {
+		t.Error(err)
+	}
+
+	r0, ok := r.(map[string]interface{})
+	if ok == false {
+		t.Error("err casting original request to map[string]interface{}")
+	}
+
+	r1, ok := r0["faces"].([]map[string]interface{})
+	if ok == false {
+		t.Error("err casting faces to []map[string]interface{}")
+	}
+
+	f := r1[0]
+	if f["hdri"] != "apartment" {
+		t.Error("default value was not set in the 0th array item")
+	}
+}
+
+// TestInputFromString makes sure generics encountered when interpreting
+// the schema are handled properly
+func TestInputFromString(t *testing.T) {
+	fProps := M("hdri", M("type", "string", "default", "apartment"))
+
+	face := M("type", "object", "properties", fProps)
+
+	fArray := M("type", "array", "items", face)
+	faces := M("faces", fArray)
+
+	req := M("type", "object", "properties", faces)
+
+	// object with array of objects
+	// we want to test properties of the inner array
+	// {
+	// 	"type": "object",
+	// 	"properties": {
+	// 		"faces": {
+	// 			"type": "array",
+	// 			"items": {
+	// 				"type": "object",
+	// 				"properties": {
+	// 					"hdri": {
+	// 						"type": "string",
+	// 						"default": "apartment"
+	// 					}
+	// 				}
+	// 			}
+	// 		}
+	// 	}
+	// }
+	loader := NewGoLoader(req)
+	schema, _ := NewSchema(loader)
+
+	// unmarshal string to request
+	exReq := `{"faces":[{}]}`
+	i := make(map[string]interface{}, 100)
+	if err := json.Unmarshal([]byte(exReq), &i); err != nil {
+		t.Error("failed to unmarshal request into byte slice")
+	}
+
+	r, err := schema.InsertDefaults(i)
+	if err != nil {
+		t.Error(err)
+	}
+
+	r0, ok := r.(map[string]interface{})
+	if ok == false {
+		t.Error("err casting original request to map[string]interface{}")
+	}
+
+	fs := r0["faces"]
+	vr := reflect.ValueOf(fs)
+	nv := make([]map[string]interface{}, vr.Len())
+	for i := 0; i < vr.Len(); i++ {
+		tmp := vr.Index(i).Interface()
+		nv[i] = tmp.(map[string]interface{})
+	}
+
+	f := nv[0]
+	if f["hdri"] != "apartment" {
+		t.Error("default value was not set in the 0th array item")
+	}
+}
+
