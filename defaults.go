@@ -3,16 +3,17 @@ package gojsonschema
 import (
 	"errors"
 	"fmt"
+	"reflect"
 )
 
 // Gotchas and todos:
-// - a schema can contain multiple types, provided that only one is non-null
-// - oneOf is not supported at the moment, but probably should be
+// - a schema can contain multiple types, provided that only one is non-null,
+//   for example, both "array", and ["array", "null"] are valid
+// - oneOf is not supported, but a default value can be set to handle cases where
+//   the attribute isn't defined at all
+// - does not currently support array of arrays
 //
-// w.r.t using "oneOf" (or similar), it appears that the validation part of
-// this library uses a "score" to determine best match. It seems like
-// doing something similar to this would be possible.
-
+//
 // This code was inspired by, and follows the same basic structure as
 // https://github.com/juju/gojsonschema. The main notable differences are:
 //
@@ -71,10 +72,7 @@ func insertRecursively(into interface{}, from map[string]interface{}) {
 			// intoAsArray represents many objects of the same type
 			intoAsArray := into.([]map[string]interface{})
 
-			// nextMap represents the subSchema that we want each item in the array
-			// to conform to
 			nextMap := from["items"].(map[string]interface{})
-
 			for _, example := range intoAsArray {
 				insertRecursively(example, nextMap)
 			}
@@ -82,12 +80,17 @@ func insertRecursively(into interface{}, from map[string]interface{}) {
 		case "object":
 			intoAsObject := into.(map[string]interface{})
 
+			// an object with oneOf doesn't have a "properties" attribute, so
+			// return from this instead of trying to iterate them
+			if _, ok := from["oneOf"]; ok {
+				return
+			}
+
 			// nextMap represents the subSchema that we want this single item to
 			// conform to
 			properties := from["properties"].(map[string]interface{})
 
 			for property, _nextSchema := range properties {
-
 				nextSchema := _nextSchema.(map[string]interface{})
 
 				// This block becomes active if value already exists in "into"
@@ -96,16 +99,34 @@ func insertRecursively(into interface{}, from map[string]interface{}) {
 				// If v is null, we want to progress to the next block in case
 				// a default value exists and should be applied on top.
 				if v, ok := intoAsObject[property]; ok && v != nil {
-					switch v.(type) {
+					vr := reflect.ValueOf(v)
+					switch vr.Kind() {
 
-					case map[string]interface{}:
+					case reflect.Map:
 						if innerMapAsObj, ok := v.(map[string]interface{}); ok {
 							insertRecursively(innerMapAsObj, nextSchema)
 						}
 
-					case []map[string]interface{}:
-						if innerMapAsArr, ok := v.([]map[string]interface{}); ok {
-							insertRecursively(innerMapAsArr, nextSchema)
+					// object.properties is always going to be map[string]interface{} because
+					// we do not current support arrays of arrays
+					case reflect.Slice:
+						arrSchema := nextSchema["items"].(map[string]interface{})
+						arrType := *typeIgnoreNull(arrSchema["type"])
+
+						// If "into" has stuff in it, and its an array, we need to figure out if the stuff is
+						// an object before we decide to recurse further. Otherwise, defaults are irrelevant
+						// and we stop
+						if arrType == "object" {
+							// was having trouble casting directly to []map[string]interface{}.
+							// a, ok := v.([]map[string]interface{}) was setting a => false. Did a
+							// bit of digging and found https://stackoverflow.com/a/12754757/1461022.
+							// It seems like go wants me to loop through the items and cast them explicitly
+							nv := make([]map[string]interface{}, vr.Len())
+							for i := 0; i < vr.Len(); i++ {
+								tmp := vr.Index(i).Interface()
+								nv[i] = tmp.(map[string]interface{})
+							}
+							insertRecursively(nv, nextSchema)
 						}
 					}
 					continue
@@ -127,10 +148,6 @@ func insertRecursively(into interface{}, from map[string]interface{}) {
 				// the user provides "null" in a given request (which is valid) and a
 				// default value exists in the inner object specs (which is also valid), we
 				// set the default value, upgrading the interpreted type from "null" to "object"
-				//
-				// In other words, the final object can never be null if a default value exists
-				// in a sub-schema, but IMO it's important to let the user know that it's ok to
-				// pass "null"
 				if v, ok := nextSchema["type"]; ok {
 					switch *typeIgnoreNull(v) {
 					case "object":
