@@ -10,7 +10,8 @@ import (
 // - a schema can contain multiple types, provided that only one is non-null,
 //   for example, both "array", and ["array", "null"] are valid
 // - oneOf is not supported, but a default value can be set to handle cases where
-//   the attribute isn't defined at all
+//   the attribute isn't defined at all. oneOf type must be declared as a sibling
+//   of oneOf
 // - does not currently support array of arrays
 //
 //
@@ -163,20 +164,6 @@ func insertRecursively(into interface{}, from map[string]interface{}) {
 	}
 }
 
-// stringExistsInSlice looks for str in slice. At the
-// moment, []interface{} is used because go doesn't know that
-// types must be a string, hence the compiler does not like that
-// I'm trying to slice as strictly containing them
-func stringExistsInSlice(slice []interface{}, val string) bool {
-	for _, item := range slice {
-		s := fmt.Sprintf("%v", item)
-		if s == val {
-			return true
-		}
-	}
-	return false
-}
-
 // return "string" if one of the following are matched
 // 1. type: "string"
 // 2. type: ["string", "null"]
@@ -189,14 +176,12 @@ func typeIgnoreNull(v interface{}) *string {
 		// according to jsonschema this must be a string, but go doesn't
 		// know that, and for all it knows this could be any type
 		s := v.([]interface{})
-		o := "object"
-		a := "array"
 
-		if stringExistsInSlice(s, o) {
-			return &o
-		}
-		if stringExistsInSlice(s, a) {
-			return &a
+		for _, t := range s {
+			ts := t.(string)
+			if ts != "null" {
+				return &ts
+			}
 		}
 	}
 
