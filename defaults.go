@@ -112,6 +112,15 @@ func insertRecursively(into interface{}, from map[string]interface{}) {
 					// we do not current support arrays of arrays
 					case reflect.Slice:
 						arrSchema := nextSchema["items"].(map[string]interface{})
+
+						// for arrays that are defined in a $ref, just skip as there won't be any
+						// default values there
+						for key := range arrSchema {
+							if key == "$ref" {
+								return
+							}
+						}
+
 						arrType := *typeIgnoreNull(arrSchema["type"])
 
 						// If "into" has stuff in it, and its an array, we need to figure out if the stuff is
